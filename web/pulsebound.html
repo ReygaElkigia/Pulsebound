@@ -103,6 +103,11 @@
     One input, perfect timing. The better you play, the more the world comes alive.</p>
 
   <div class="panel">
+    <div class="label">Mode</div>
+    <div class="row" id="modeRow">
+      <button class="chip" data-mode="pulse" aria-pressed="true">Pulse</button>
+      <button class="chip" data-mode="drum">Drum · 2 tombol</button>
+    </div>
     <div class="label">Select difficulty</div>
     <div class="row" id="diffRow">
       <button class="chip" data-diff="0">Easy</button>
@@ -110,10 +115,10 @@
       <button class="chip" data-diff="2">Hard</button>
     </div>
     <button class="btn" id="startBtn">Start</button>
-    <div class="keyhint">Tap <kbd>Space</kbd> · click · or touch &nbsp;•&nbsp; hold for Hold nodes &nbsp;•&nbsp; <kbd>Esc</kbd> pauses</div>
+    <div class="keyhint" id="keyhint">Tap <kbd>Space</kbd> · click · or touch &nbsp;•&nbsp; hold for Hold nodes &nbsp;•&nbsp; <kbd>Esc</kbd> pauses</div>
   </div>
 
-  <div class="how">
+  <div class="how" id="howto">
     <div><b>Standard</b><span>Cyan dot. One strike as it crosses the ring.</span></div>
     <div><b>Double</b><span>Amber pair. Two quick strikes, back to back.</span></div>
     <div><b>Hold</b><span>Magenta comet. Press on the head, release on the tail.</span></div>
@@ -345,6 +350,39 @@ function buildChart(diff){
   lastNodeTime = chart.reduce((m,n)=>Math.max(m, (n.endBeat??n.secondBeat??n.beat)),0)*SPB + songStart;
 }
 
+// Drum mode chart: left = kick (cyan), right = snare (magenta), like drumstick sticking.
+function buildDrumChart(diff){
+  const cfg=DIFF[diff]; chart=[]; nodeId=0;
+  const rng=mulberry32(0xD0+diff*7);
+  const add=(beat,lane)=>chart.push({id:nodeId++,type:'standard',lane,beat,
+    pressed:0,started:false,released:false,done:false,flash:0});
+
+  for(let bar=0;bar<BARS;bar++){
+    const b0=bar*BEATS_PER_BAR;
+    const section=bar<8?0 : bar<24?1 : bar<44?2 : bar<60?3 : 4;
+
+    if(section===4){                              // outro resolve
+      add(b0,0); if(bar%2===0) add(b0+2,1);
+      if(bar===BARS-1){ add(b0,0); add(b0,1); }   // final both-hands hit
+      continue;
+    }
+    // core groove: kick(L) on beats 1 & 3, snare(R) on beats 2 & 4
+    add(b0,0); add(b0+1,1); add(b0+2,0); add(b0+3,1);
+    if(section>=1 && cfg.offbeats){ add(b0+2.5,0); add(b0+3.5,1); }   // hats on the "and"
+    if(section>=2){ add(b0+0.5,1); add(b0+1.5,0); }                   // busier eighths, alternating
+    if(section>=2 && bar%4===0) add(b0,1);                            // crash = both hands on the downbeat
+    if(section>=3 && cfg.climax){
+      if(bar%4===3){ for(let e=0;e<4;e++) add(b0+3+e*0.25, e%2); }    // 16th fill, L R L R
+      if(rng()>0.5) add(b0+1.75,0);
+    }
+  }
+  // drop duplicate (beat,lane) pairs
+  const seen=new Set();
+  chart=chart.filter(n=>{const k=n.beat.toFixed(3)+':'+n.lane; if(seen.has(k))return false; seen.add(k); return true;});
+  chart.sort((a,b)=>a.beat-b.beat);
+  lastNodeTime = chart.reduce((m,n)=>Math.max(m,n.beat),0)*SPB + songStart;
+}
+
 // helper: the next press this node is waiting for (absolute time), or null
 function nextPressTime(n){
   if(n.done) return null;
@@ -360,7 +398,7 @@ function needsRelease(n){ return n.type==='hold' && n.started && !n.released && 
 //  GAME STATE
 // ============================================================
 const S = { menu:'menu', countdown:'countdown', play:'play', paused:'paused', results:'results' };
-let state = S.menu, difficulty = 1;
+let state = S.menu, difficulty = 1, gameMode = 'pulse';   // 'pulse' | 'drum'
 let score=0, combo=0, maxCombo=0, tier=0, flow=0.5, holding=false;
 let counts={perfect:0,great:0,good:0,miss:0};
 let popup={text:'',t:0,color:'#fff'};
@@ -386,7 +424,7 @@ function startRun(){
   particles=[];popup.t=0;banner.t=0;lastBeatSeen=-1;
   comboPop=0;auraLevel=0;auraRot=0;tierPrev=0;shockwaves=[];feverPulse=0;screenFlash=0;
   songStart = actx.currentTime + LEAD_IN;
-  buildChart(difficulty);
+  if(gameMode==='drum') buildDrumChart(difficulty); else buildChart(difficulty);
   buildMusic();
   if(schedTimer) clearInterval(schedTimer);
   schedTimer = setInterval(scheduler, 25);
@@ -409,6 +447,11 @@ function classify(absDelta){
   return 'miss';
 }
 function nodeScreenPos(n, dist){ return [cx+Math.cos(n.angle)*dist, cy+Math.sin(n.angle)*dist]; }
+const drumGap = () => minDim*0.2;
+function nodeHitPos(n){                       // where the hit "lands" (for particles/flash)
+  if(gameMode==='drum') return [cx + (n.lane? drumGap() : -drumGap()), cy];
+  return nodeScreenPos(n, bindR());
+}
 const bindR = () => minDim*0.16;
 const spawnR = () => minDim*0.6;
 const approachSpeed = () => (spawnR()-bindR())/judgeWindows().approach;
@@ -416,7 +459,7 @@ const approachSpeed = () => (spawnR()-bindR())/judgeWindows().approach;
 function register(kind, n){
   counts[kind]++;
   const hit = kind!=='miss';
-  const [hx,hy] = nodeScreenPos(n, bindR());
+  const [hx,hy] = nodeHitPos(n);
   if(hit){
     combo++; maxCombo=Math.max(maxCombo,combo);
     score += Math.round(1000 * (kind==='perfect'?1:kind==='great'?0.75:0.4) * multiplier());
@@ -462,6 +505,20 @@ function onRelease(){
   if(!best) return;
   best.released=true; best.done=true;
   register(classify(bd), best);
+}
+
+// Drum mode: one of two lanes. Matches the nearest pending note in THAT lane only.
+function onHit(lane){
+  if(state!==S.play) return;
+  const now=songTime()+songStart, w=judgeWindows();
+  let best=null,bd=Infinity;
+  for(const n of chart){
+    if(n.done || n.lane!==lane) continue;
+    const et=nextPressTime(n); if(et==null) continue;
+    const d=Math.abs(now-et); if(d<bd){bd=d;best=n;}
+  }
+  if(!best || bd>w.good){ if(actx) hitSfx(actx.currentTime,'miss'); return; }  // whiffed stick
+  best.pressed=1; best.done=true; register(classify(bd), best);
 }
 
 function autoMiss(){
@@ -571,7 +628,7 @@ function draw(){
 
   if(state===S.play || state===S.countdown || state===S.paused || state===S.results){
     drawComboHalo(dim);
-    drawNodes(dim);
+    if(gameMode==='drum') drawDrum(dim); else drawNodes(dim);
     drawPulse(dim);
     drawComboOrbiters(dim);
     drawShockwaves();
@@ -602,6 +659,39 @@ function drawBackground(dim){
 }
 
 function typeColor(t){ return t==='double'?'#FFE27A':t==='hold'?'#FF3DAE':'#28E5FF'; }
+
+// Drum mode: two lanes flanking the Pulse; notes fall to the pads on the beat.
+function drawDrum(dim){
+  const now=songTime()+songStart, gap=drumGap(), padY=cy;
+  const spawnY=cy-minDim*0.55, speed=(padY-spawnY)/judgeWindows().approach, app=judgeWindows().approach;
+  const lanes=[{x:cx-gap,col:'#28E5FF',key:'F  ◄'},{x:cx+gap,col:'#FF3DAE',key:'► J'}];
+
+  // lane guides + pad rings + key labels
+  for(const L of lanes){
+    ctx.save(); ctx.globalAlpha=0.10*dim; ctx.strokeStyle=L.col; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(L.x,spawnY); ctx.lineTo(L.x,padY); ctx.stroke(); ctx.restore();
+    ctx.save(); ctx.strokeStyle=L.col; ctx.globalAlpha=0.8*dim; ctx.lineWidth=3;
+    ctx.shadowColor=L.col; ctx.shadowBlur=14+beatFlash*18;
+    ctx.beginPath(); ctx.arc(L.x,padY,minDim*0.05,0,Math.PI*2); ctx.stroke(); ctx.restore();
+    txt(L.key, L.x, padY+minDim*0.1, minDim*0.02, 'rgba(154,167,199,.8)','center','600',2);
+  }
+
+  // falling notes
+  for(const n of chart){
+    if(n.done && n.flash<=0) continue;
+    const et=songStart+n.beat*SPB;
+    if((et-now) > app+0.15) continue;                 // not spawned yet
+    const L=lanes[n.lane];
+    const y=n.done ? padY : padY-(et-now)*speed;
+    // approach ring shrinking onto the pad
+    if(!n.done){
+      const lead=Math.max(0,(et-now));
+      ctx.strokeStyle=L.col; ctx.globalAlpha=(0.2+0.4*(1-Math.min(1,lead/app)))*dim; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(L.x,y, minDim*0.028, 0, Math.PI*2); ctx.stroke(); ctx.globalAlpha=1;
+    }
+    glowDot(L.x, y, minDim*0.026*(1+(n.flash||0)*0.7), L.col, dim);
+  }
+}
 
 function drawNodes(dim){
   if(!chart.length) return;
@@ -665,12 +755,14 @@ function drawPulse(dim){
   const pop = st>0 ? Math.pow(1-phase,2)*0.35 : 0;
   const core = minDim*0.045*(1+pop+auraLevel*0.28) * (1+ (holding?0.12:0));
 
-  // bind ring (the timing reference)
-  ctx.save();
-  ctx.strokeStyle=`rgba(232,238,255,${0.5*dim})`; ctx.lineWidth=2;
-  ctx.shadowColor='#28E5FF'; ctx.shadowBlur=14+beatFlash*20;
-  ctx.beginPath(); ctx.arc(cx,cy,br,0,Math.PI*2); ctx.stroke();
-  ctx.restore();
+  // bind ring (the timing reference) — hidden in drum mode where the pads serve that role
+  if(gameMode!=='drum'){
+    ctx.save();
+    ctx.strokeStyle=`rgba(232,238,255,${0.5*dim})`; ctx.lineWidth=2;
+    ctx.shadowColor='#28E5FF'; ctx.shadowBlur=14+beatFlash*20;
+    ctx.beginPath(); ctx.arc(cx,cy,br,0,Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
 
   // flow ring
   ctx.save();
@@ -850,7 +942,8 @@ function grade(){
 }
 function showResults(){
   hideAll(); resultScreen.hidden=false;
-  document.getElementById('resTitle').textContent = 'First Light · '+DIFF[difficulty].name;
+  document.getElementById('resTitle').textContent =
+    'First Light · '+(gameMode==='drum'?'Drum':'Pulse')+' · '+DIFF[difficulty].name;
   document.getElementById('resGrade').textContent = grade();
   const acc=(accuracy()*100).toFixed(2);
   document.getElementById('resStats').innerHTML = `
@@ -870,6 +963,31 @@ document.getElementById('diffRow').addEventListener('click', e=>{
   difficulty=+b.dataset.diff;
   [...e.currentTarget.querySelectorAll('.chip')].forEach(c=>c.setAttribute('aria-pressed', c===b?'true':'false'));
 });
+
+// mode chips
+const HOWTO={
+  pulse:`<div><b>Standard</b><span>Cyan dot. One strike as it crosses the ring.</span></div>
+         <div><b>Double</b><span>Amber pair. Two quick strikes, back to back.</span></div>
+         <div><b>Hold</b><span>Magenta comet. Press on the head, release on the tail.</span></div>`,
+  drum:`<div><b>Kiri &nbsp;◄</b><span>Tombol <b>F</b> / <b>←</b> untuk not <b>cyan</b> di pad kiri.</span></div>
+        <div><b>► &nbsp;Kanan</b><span>Tombol <b>J</b> / <b>→</b> untuk not <b>magenta</b> di pad kanan.</span></div>
+        <div><b>Groove</b><span>Ikuti pola kiri-kanan seperti stik drum. Ketukan kuat = dua tangan.</span></div>`
+};
+const KEYHINT={
+  pulse:`Tap <kbd>Space</kbd> · klik · atau sentuh &nbsp;•&nbsp; tahan untuk Hold &nbsp;•&nbsp; <kbd>Esc</kbd> jeda`,
+  drum:`Kiri <kbd>F</kbd>/<kbd>←</kbd> · Kanan <kbd>J</kbd>/<kbd>→</kbd> · atau sentuh sisi kiri/kanan &nbsp;•&nbsp; <kbd>Esc</kbd> jeda`
+};
+function updateModeUI(){
+  document.getElementById('howto').innerHTML = HOWTO[gameMode];
+  document.getElementById('keyhint').innerHTML = KEYHINT[gameMode];
+}
+document.getElementById('modeRow').addEventListener('click', e=>{
+  const b=e.target.closest('.chip'); if(!b) return;
+  gameMode=b.dataset.mode;
+  [...e.currentTarget.querySelectorAll('.chip')].forEach(c=>c.setAttribute('aria-pressed', c===b?'true':'false'));
+  updateModeUI();
+});
+updateModeUI();
 document.getElementById('startBtn').onclick = ()=>startRun();
 document.getElementById('retryBtn').onclick = ()=>startRun();
 document.getElementById('menuBtn').onclick = ()=>{state=S.menu;hideAll();startScreen.hidden=false;};
@@ -898,14 +1016,25 @@ function pressGuard(e){
   return e.target && e.target.closest && e.target.closest('.screen');
 }
 window.addEventListener('keydown', e=>{
-  if(e.code==='Space'){ e.preventDefault(); if(!e.repeat) onPress(); }
-  else if(e.code==='Escape'){ if(state===S.play) pauseGame(); else if(state===S.paused) resumeGame(); }
-  else if(e.key==='r'||e.key==='R'){ if(state===S.play||state===S.paused){resumeGame();startRun();} }
-}, {passive:false});
-window.addEventListener('keyup', e=>{ if(e.code==='Space'){ e.preventDefault(); onRelease(); } }, {passive:false});
+  // mode-agnostic controls first
+  if(e.code==='Escape'){ if(state===S.play) pauseGame(); else if(state===S.paused) resumeGame(); return; }
+  if(e.key==='r'||e.key==='R'){ if(state===S.play||state===S.paused){resumeGame();startRun();} return; }
 
-canvas.addEventListener('pointerdown', e=>{ e.preventDefault(); onPress(); });
-window.addEventListener('pointerup', e=>{ onRelease(); });
+  if(gameMode==='drum'){
+    if(e.code==='ArrowLeft'||e.code==='KeyF'||e.code==='KeyA'){ e.preventDefault(); if(!e.repeat) onHit(0); }
+    else if(e.code==='ArrowRight'||e.code==='KeyJ'||e.code==='KeyL'){ e.preventDefault(); if(!e.repeat) onHit(1); }
+  } else {
+    if(e.code==='Space'){ e.preventDefault(); if(!e.repeat) onPress(); }
+  }
+}, {passive:false});
+window.addEventListener('keyup', e=>{ if(gameMode!=='drum' && e.code==='Space'){ e.preventDefault(); onRelease(); } }, {passive:false});
+
+canvas.addEventListener('pointerdown', e=>{
+  e.preventDefault();
+  if(gameMode==='drum') onHit(e.clientX < window.innerWidth/2 ? 0 : 1);
+  else onPress();
+});
+window.addEventListener('pointerup', e=>{ if(gameMode!=='drum') onRelease(); });
 
 // kick off render loop
 requestAnimationFrame(frame);
