@@ -571,12 +571,20 @@ function onPress(){
 function onRelease(){
   holding=false;
   if(state!==S.play) return;
-  const now=songTime()+songStart, w=judgeWindows();
+  const now=songTime()+songStart;
+  // find the started hold still awaiting completion
   let best=null,bd=Infinity;
-  for(const n of chart){ if(!needsRelease(n))continue; const et=songStart+n.endBeat*SPB; const d=Math.abs(now-et); if(d<bd){bd=d;best=n;} }
+  for(const n of chart){ if(!needsRelease(n))continue;
+    const et=songStart+n.endBeat*SPB, d=Math.abs(now-et); if(d<bd){bd=d;best=n;} }
   if(!best) return;
+  const endT=songStart+best.endBeat*SPB, startT=songStart+best.beat*SPB;
   best.released=true; best.done=true;
-  register(classify(bd), best);
+  if(now >= endT - 0.18){                 // released at/after the tail (generous grace) -> success
+    register(best.startKind||'perfect', best);
+  } else {                                // released early -> reward how far you held
+    const frac=(now-startT)/Math.max(0.001,endT-startT);
+    register(frac>=0.6?'good':'miss', best);
+  }
 }
 
 // Drum mode: one of two lanes. Matches the nearest pending note in THAT lane only.
@@ -604,7 +612,7 @@ function autoMiss(){
       else { n.pressed=1; n.done=true; register('miss',n); }
     } else if(needsRelease(n)){
       const rt=songStart+n.endBeat*SPB;
-      if(now>rt+w.good){ n.done=true; register('miss',n); }  // held too long
+      if(now>=rt){ n.done=true; register(n.startKind||'perfect', n); }  // held through to the tail -> success
     }
   }
 }
@@ -775,20 +783,28 @@ function drawNodes(dim){
     if(n.done && n.flash<=0) continue;
     const col = typeColor(n.type);
 
-    // hold: draw tail + connector
+    // hold: draw tail + tether + head
     if(n.type==='hold'){
       const tailT=songStart+n.endBeat*SPB;
       const distTail=br+(tailT-now)*speed;
       if((n.beat*SPB+songStart-now) > app+0.15 && !n.started) continue;
       const [hx,hy]=nodeScreenPos(n, Math.max(br*0.2,distHead));
       const [tx,ty]=nodeScreenPos(n, Math.max(br*0.2,distTail));
-      ctx.strokeStyle=col; ctx.lineWidth=4; ctx.globalAlpha=0.5*dim;
-      ctx.shadowColor=col; ctx.shadowBlur= n.started?24:10;
-      ctx.beginPath(); ctx.moveTo(hx,hy); ctx.lineTo(tx,ty); ctx.stroke();
-      ctx.globalAlpha=1;
-      if(!n.started){ glowDot(hx,hy, minDim*0.016, col, dim); ringMark(hx,hy,minDim*0.026,col,dim); }
-      glowDot(tx,ty, minDim*0.012, col, dim);
-      ctx.shadowBlur=0;
+      // tether: thicker + brighter while you are holding (keep-holding cue)
+      ctx.strokeStyle=col; ctx.lineWidth=n.started?7:4; ctx.lineCap='round';
+      ctx.globalAlpha=(n.started?0.85:0.45)*dim;
+      ctx.beginPath(); ctx.moveTo(hx,hy); ctx.lineTo(tx,ty); ctx.stroke(); ctx.globalAlpha=1;
+      if(!n.started){
+        // shrinking approach ring on the head — same timing cue standard notes use
+        const lead=Math.max(0,(headT-now));
+        ctx.strokeStyle=col; ctx.globalAlpha=(0.25+0.45*(1-Math.min(1,lead/app)))*dim; ctx.lineWidth=2;
+        ctx.beginPath(); ctx.arc(hx,hy, minDim*0.02+lead*speed*0.06, 0, Math.PI*2); ctx.stroke(); ctx.globalAlpha=1;
+        glowDot(hx,hy, minDim*0.019, col, dim);
+      } else {
+        // holding: pulsing marker on the bind ring so you can see the tail arrive
+        glowDot(cx+Math.cos(n.angle)*br, cy+Math.sin(n.angle)*br, minDim*0.013*(1+0.4*Math.sin(now*20)), col, dim);
+      }
+      glowDot(tx,ty, minDim*0.016, col, dim);
       continue;
     }
 
@@ -1039,7 +1055,7 @@ document.getElementById('diffRow').addEventListener('click', e=>{
 const HOWTO={
   pulse:`<div><b>Standard</b><span>Cyan dot. One strike as it crosses the ring.</span></div>
          <div><b>Double</b><span>Amber pair. Two quick strikes, back to back.</span></div>
-         <div><b>Hold</b><span>Magenta comet. Press on the head, release on the tail.</span></div>`,
+         <div><b>Hold</b><span>Magenta comet. Press on the head and keep holding until the tail reaches the ring — release timing is forgiving.</span></div>`,
   drum:`<div><b>Kiri &nbsp;◄</b><span>Tombol <b>F</b> / <b>←</b> untuk not <b>cyan</b> di pad kiri.</span></div>
         <div><b>► &nbsp;Kanan</b><span>Tombol <b>J</b> / <b>→</b> untuk not <b>magenta</b> di pad kanan.</span></div>
         <div><b>Groove</b><span>Ikuti pola kiri-kanan seperti stik drum. Ketukan kuat = dua tangan.</span></div>`
