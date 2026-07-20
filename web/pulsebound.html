@@ -62,6 +62,8 @@
   .song .s-title{font-family:var(--font-ui);font-weight:700;font-size:15px;letter-spacing:.01em}
   .song .s-meta{font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
   .song .s-stars{color:var(--acc);letter-spacing:.05em}
+  .song.add{border-style:dashed;align-items:center;justify-content:center;text-align:center}
+  .song.add .s-title{color:var(--ink)}
 
   .btn{font-family:var(--font-mono);font-size:15px;letter-spacing:.2em;text-transform:uppercase;font-weight:600;
     color:var(--void);background:linear-gradient(100deg,var(--cyan),var(--magenta));
@@ -122,6 +124,7 @@
     </div>
     <div class="label">Track</div>
     <div class="songs" id="songRow"></div>
+    <input type="file" id="audioFile" accept="audio/*" hidden>
     <div class="label">Select difficulty</div>
     <div class="row" id="diffRow">
       <button class="chip" data-diff="0">Easy</button>
@@ -282,10 +285,13 @@ const SONGS = [
 ];
 let currentSong = SONGS[0];
 let PROG = currentSong.prog;      // one chord per bar, cycled
+let customSong = null;            // a track loaded from the player's own device (session only)
+let customSource = null;          // the playing AudioBufferSourceNode for a custom track
 
-function applySong(s){ currentSong=s; BPM=s.bpm; SPB=60/BPM; PROG=s.prog; ACC1=s.acc1; ACC2=s.acc2; }
+function applySong(s){ currentSong=s; BPM=s.bpm; SPB=60/BPM; if(s.prog)PROG=s.prog; ACC1=s.acc1; ACC2=s.acc2; }
 function selectSong(id){
-  const s=SONGS.find(x=>x.id===id); if(!s) return;
+  const s = id==='custom' ? customSong : SONGS.find(x=>x.id===id);
+  if(!s) return;
   applySong(s); buildGradients();
   const row=document.getElementById('songRow');
   if(row) [...row.children].forEach(c=>c.setAttribute('aria-pressed', c.dataset.song===id ? 'true':'false'));
@@ -464,6 +470,90 @@ function buildDrumChart(diff){
   lastNodeTime = chart.reduce((m,n)=>Math.max(m,n.beat),0)*SPB + songStart;
 }
 
+// ============================================================
+//  CUSTOM SONGS — load the player's own audio, auto-map its beats
+//  (the file stays on-device; nothing is uploaded or embedded)
+// ============================================================
+function detectOnsets(buf){
+  const sr=buf.sampleRate, ch0=buf.getChannelData(0);
+  const ch1=buf.numberOfChannels>1?buf.getChannelData(1):null;
+  const frame=1024, hop=512, nFrames=Math.max(0,Math.floor((ch0.length-frame)/hop));
+  const energy=new Float32Array(nFrames);
+  for(let f=0;f<nFrames;f++){
+    let sum=0; const off=f*hop;
+    for(let i=0;i<frame;i++){ let s=ch0[off+i]; if(ch1)s=(s+ch1[off+i])*0.5; sum+=s*s; }
+    energy[f]=Math.sqrt(sum/frame);
+  }
+  const flux=new Float32Array(nFrames); let maxF=1e-6;
+  for(let f=1;f<nFrames;f++){ const d=energy[f]-energy[f-1]; flux[f]=d>0?d:0; if(flux[f]>maxF)maxF=flux[f]; }
+  for(let f=0;f<nFrames;f++) flux[f]/=maxF;
+  const win=32, onsets=[]; let lastT=-1; const minGap=0.10;
+  for(let f=1;f<nFrames-1;f++){
+    let mean=0,cnt=0;
+    for(let k=Math.max(0,f-win);k<=Math.min(nFrames-1,f+win);k++){ mean+=flux[k]; cnt++; }
+    mean/=cnt;
+    if(flux[f] > mean*1.4+0.04 && flux[f]>=flux[f-1] && flux[f]>flux[f+1]){
+      const t=f*hop/sr;
+      if(t-lastT>=minGap){ onsets.push({t, s:flux[f]}); lastT=t; if(onsets.length>=4000) break; }
+    }
+  }
+  return onsets;
+}
+function estimateBPM(onsets){
+  if(onsets.length<4) return 120;
+  const iois=[];
+  for(let i=1;i<onsets.length;i++){ const d=onsets[i].t-onsets[i-1].t; if(d>0.2&&d<1.5) iois.push(d); }
+  if(!iois.length) return 120;
+  iois.sort((a,b)=>a-b);
+  let bpm=60/iois[Math.floor(iois.length/2)];
+  while(bpm<70) bpm*=2; while(bpm>180) bpm/=2;
+  return Math.round(bpm);
+}
+// Build a chart from detected onsets for the current mode + difficulty.
+function buildCustomChart(diff){
+  chart=[]; nodeId=0;
+  const minGap={0:0.38,1:0.26,2:0.16}[diff] ?? 0.26;
+  const strongOnly = diff===0;
+  let last=-1, i=0;
+  for(const o of customSong.onsets){
+    if(strongOnly && o.s<0.22) continue;
+    if(o.t-last < minGap) continue;
+    last=o.t;
+    const node={id:nodeId++, type:'standard', beat:o.t/SPB, pressed:0,started:false,released:false,done:false,flash:0};
+    if(gameMode==='drum') node.lane=i%2; else node.angle=(nodeId*137.508)*Math.PI/180;
+    chart.push(node); i++;
+  }
+  chart.sort((a,b)=>a.beat-b.beat);
+  lastNodeTime = songStart + customSong.buffer.duration;
+}
+function playCustomAudio(startAt){
+  stopCustomAudio();
+  customSource=actx.createBufferSource();
+  customSource.buffer=customSong.buffer;
+  customSource.connect(musicBus);
+  customSource.start(startAt);
+}
+function stopCustomAudio(){
+  if(customSource){ try{customSource.stop();}catch(e){} try{customSource.disconnect();}catch(e){} customSource=null; }
+}
+async function loadCustomFile(file){
+  if(!file) return;
+  initAudio();
+  if(actx.state==='suspended'){ try{ await actx.resume(); }catch(e){} }
+  showToast('Menganalisis '+file.name+' …');
+  let audioBuf;
+  try{ audioBuf=await actx.decodeAudioData(await file.arrayBuffer()); }
+  catch(e){ showToast('Gagal memuat audio ini'); return; }
+  const onsets=detectOnsets(audioBuf);
+  if(onsets.length<8){ showToast('Ketukan tidak cukup terdeteksi'); return; }
+  const bpm=estimateBPM(onsets);
+  customSong={ id:'custom', title:file.name.replace(/\.[^.]+$/,'').slice(0,28), mood:'Custom',
+    bpm, stars:3, acc1:'#E6E9F0', acc2:'#FF3B6B', custom:true, buffer:audioBuf, onsets };
+  renderSongCards();
+  selectSong('custom');
+  showToast(customSong.title+' · '+bpm+' BPM · '+onsets.length+' not — siap!');
+}
+
 // helper: the next press this node is waiting for (absolute time), or null
 function nextPressTime(n){
   if(n.done) return null;
@@ -504,17 +594,24 @@ function startRun(){
   counts={perfect:0,great:0,good:0,miss:0};
   particles=[];popup.t=0;banner.t=0;lastBeatSeen=-1;
   comboPop=0;auraLevel=0;auraRot=0;tierPrev=0;shockwaves=[];feverPulse=0;screenFlash=0;
+  stopCustomAudio();
   songStart = actx.currentTime + LEAD_IN;
-  if(gameMode==='drum') buildDrumChart(difficulty); else buildChart(difficulty);
-  buildMusic();
-  if(schedTimer) clearInterval(schedTimer);
-  schedTimer = setInterval(scheduler, 25);
+  if(schedTimer){ clearInterval(schedTimer); schedTimer=null; }
+  if(currentSong.custom){
+    buildCustomChart(difficulty);      // live audio + auto-mapped beats
+    playCustomAudio(songStart);
+  } else {
+    if(gameMode==='drum') buildDrumChart(difficulty); else buildChart(difficulty);
+    buildMusic();                      // synthesized track
+    schedTimer = setInterval(scheduler, 25);
+  }
   state = S.countdown;
   hideAll();
 }
 
 function endRun(){
   if(schedTimer){clearInterval(schedTimer);schedTimer=null;}
+  stopCustomAudio();
   state = S.results;
   showResults();
 }
@@ -1086,15 +1183,30 @@ document.getElementById('modeRow').addEventListener('click', e=>{
 updateModeUI();
 
 // song picker
-function renderSongCards(){
-  const row=document.getElementById('songRow'); if(!row) return;
-  row.innerHTML=SONGS.map(s=>`
-    <button class="song" data-song="${s.id}" style="--acc:${s.acc1}" aria-pressed="${s.id===currentSong.id}">
+function songCard(s){
+  return `<button class="song" data-song="${s.id}" style="--acc:${s.acc1}" aria-pressed="${s.id===currentSong.id}">
       <span class="s-title">${s.title}</span>
       <span class="s-meta">${s.mood} · ${s.bpm} BPM · <span class="s-stars">${'★'.repeat(s.stars)}</span></span>
-    </button>`).join('');
-  row.addEventListener('click', e=>{ const b=e.target.closest('.song'); if(b) selectSong(b.dataset.song); });
+    </button>`;
 }
+function renderSongCards(){
+  const row=document.getElementById('songRow'); if(!row) return;
+  let html=SONGS.map(songCard).join('');
+  if(customSong) html+=songCard(customSong);
+  html+=`<button class="song add" id="loadSongBtn" style="--acc:#9AA7C7">
+      <span class="s-title">＋ Muat lagu</span>
+      <span class="s-meta">MP3 / audio dari perangkat</span></button>`;
+  row.innerHTML=html;
+}
+// one delegated handler (survives re-renders)
+document.getElementById('songRow').addEventListener('click', e=>{
+  if(e.target.closest('#loadSongBtn')){ document.getElementById('audioFile').click(); return; }
+  const b=e.target.closest('.song'); if(b && b.dataset.song) selectSong(b.dataset.song);
+});
+document.getElementById('audioFile').addEventListener('change', e=>{
+  const f=e.target.files && e.target.files[0]; if(f) loadCustomFile(f);
+  e.target.value='';   // allow re-selecting the same file later
+});
 renderSongCards();
 document.getElementById('startBtn').onclick = ()=>startRun();
 document.getElementById('retryBtn').onclick = ()=>startRun();
@@ -1102,6 +1214,7 @@ document.getElementById('menuBtn').onclick = ()=>{state=S.menu;hideAll();startSc
 document.getElementById('resumeBtn').onclick = ()=>resumeGame();
 document.getElementById('quitBtn').onclick = ()=>{
   if(schedTimer){clearInterval(schedTimer);schedTimer=null;}
+  stopCustomAudio();
   if(actx&&actx.state==='running')actx.suspend();
   state=S.menu;hideAll();startScreen.hidden=false;
 };
