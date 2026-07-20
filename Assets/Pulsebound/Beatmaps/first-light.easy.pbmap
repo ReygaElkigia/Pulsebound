@@ -1,0 +1,35 @@
+{
+    "schema": 1,
+    "beatmapId": "first-light-easy",
+    "songId": "first-light",
+    "title": "First Light",
+    "author": "Pulsebound Team",
+    "difficulty": 0,
+    "starRating": 2,
+    "constantBpm": 120.0,
+    "tempoAnchors": [],
+    "leadInSeconds": 2.0,
+    "nodes": [
+        { "id": 1, "type": 0, "beat": 4.0 },
+        { "id": 2, "type": 0, "beat": 6.0 },
+        { "id": 3, "type": 0, "beat": 8.0 },
+        { "id": 4, "type": 1, "beat": 10.0, "endBeat": 12.0 },
+        { "id": 5, "type": 0, "beat": 14.0 },
+        { "id": 6, "type": 2, "beat": 16.0, "secondBeat": 16.5 },
+        { "id": 7, "type": 0, "beat": 18.0 },
+        { "id": 8, "type": 0, "beat": 20.0 },
+        { "id": 9, "type": 3, "beat": 22.0, "echoBeat": 24.0 },
+        { "id": 10, "type": 7, "beat": 26.0 },
+        { "id": 11, "type": 7, "beat": 27.0 },
+        { "id": 12, "type": 7, "beat": 28.0 },
+        { "id": 13, "type": 7, "beat": 29.0 },
+        { "id": 14, "type": 0, "beat": 32.0 }
+    ],
+    "zones": [
+        { "type": 1, "startBeat": 14.0, "endBeat": 18.0, "value": 1.25 },
+        { "type": 0, "startBeat": 22.0, "endBeat": 26.0, "value": 20.0 }
+    ],
+    "backgroundThemeId": "deep-void",
+    "accentDuoId": "cyan-magenta",
+    "reactiveIntensity": 0.6
+}

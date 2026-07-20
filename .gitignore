@@ -1,0 +1,39 @@
+# Unity generated
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+
+# Asset meta files for folders Unity would regenerate are kept; caches are not
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Addressables local cache
+/Assets/StreamingAssets/aa*
+ServerData/
+
+# OS / IDE
+.DS_Store
+.vs/
+.idea/
+.vscode/
+*.stackdump
+
+# Steam
+steam_appid.txt
