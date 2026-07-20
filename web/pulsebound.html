@@ -121,6 +121,7 @@
     <div class="row" id="modeRow">
       <button class="chip" data-mode="pulse" aria-pressed="true">Pulse</button>
       <button class="chip" data-mode="drum">Drum · 2 tombol</button>
+      <button class="chip" data-mode="duel">Duel · lawan</button>
     </div>
     <div class="label">Track</div>
     <div class="songs" id="songRow"></div>
@@ -520,7 +521,7 @@ function buildCustomChart(diff){
     if(o.t-last < minGap) continue;
     last=o.t;
     const node={id:nodeId++, type:'standard', beat:o.t/SPB, pressed:0,started:false,released:false,done:false,flash:0};
-    if(gameMode==='drum') node.lane=i%2; else node.angle=(nodeId*137.508)*Math.PI/180;
+    if(gameMode==='drum'||gameMode==='duel') node.lane=i%2; else node.angle=(nodeId*137.508)*Math.PI/180;
     chart.push(node); i++;
   }
   chart.sort((a,b)=>a.beat-b.beat);
@@ -576,7 +577,7 @@ let popup={text:'',t:0,color:'#fff'};
 let banner={text:'',t:0,color:'#fff'};
 let particles=[], beatFlash=0, shake=0, lastBeatSeen=-1;
 // high-combo animation state
-let comboPop=0, auraLevel=0, auraRot=0, tierPrev=0, shockwaves=[], feverPulse=0, screenFlash=0;
+let comboPop=0, auraLevel=0, auraRot=0, tierPrev=0, shockwaves=[], feverPulse=0, screenFlash=0, hurtFlash=0;
 
 const TIERS=[{c:0,m:1},{c:10,m:1.5},{c:25,m:2},{c:50,m:3},{c:100,m:4}];
 const TIER_LABEL=['','FLOW ×1.5','SURGE ×2','CASCADE ×3','RESONANCE ×4'];
@@ -593,7 +594,7 @@ function startRun(){
   score=0;combo=0;maxCombo=0;tier=0;flow=0.5;holding=false;
   counts={perfect:0,great:0,good:0,miss:0};
   particles=[];popup.t=0;banner.t=0;lastBeatSeen=-1;
-  comboPop=0;auraLevel=0;auraRot=0;tierPrev=0;shockwaves=[];feverPulse=0;screenFlash=0;
+  comboPop=0;auraLevel=0;auraRot=0;tierPrev=0;shockwaves=[];feverPulse=0;screenFlash=0;hurtFlash=0;
   stopCustomAudio();
   songStart = actx.currentTime + LEAD_IN;
   if(schedTimer){ clearInterval(schedTimer); schedTimer=null; }
@@ -601,7 +602,7 @@ function startRun(){
     buildCustomChart(difficulty);      // live audio + auto-mapped beats
     playCustomAudio(songStart);
   } else {
-    if(gameMode==='drum') buildDrumChart(difficulty); else buildChart(difficulty);
+    if(gameMode==='drum'||gameMode==='duel') buildDrumChart(difficulty); else buildChart(difficulty);
     buildMusic();                      // synthesized track
     schedTimer = setInterval(scheduler, 25);
   }
@@ -627,7 +628,7 @@ function classify(absDelta){
 function nodeScreenPos(n, dist){ return [cx+Math.cos(n.angle)*dist, cy+Math.sin(n.angle)*dist]; }
 const drumGap = () => minDim*0.2;
 function nodeHitPos(n){                       // where the hit "lands" (for particles/flash)
-  if(gameMode==='drum') return [cx + (n.lane? drumGap() : -drumGap()), cy];
+  if(gameMode==='drum' || gameMode==='duel') return [cx + (n.lane? drumGap() : -drumGap()), cy];
   return nodeScreenPos(n, bindR());
 }
 const bindR = () => minDim*0.16;
@@ -648,6 +649,14 @@ function register(kind, n){
     combo=0; tier=Math.max(0,tier-1);
     flow = Math.max(0, flow - 0.09);
     burst(hx,hy,'#FF5C77',8);
+    if(gameMode==='duel'){                       // an enemy broke through and hit the Pulse
+      n.breached=true;
+      flow=Math.max(0, flow-0.06);               // extra damage
+      hurtFlash=1;
+      if(!reduceMotion) shake=Math.min(18, shake+6);
+      for(let k=0;k<12;k++){ const a=Math.random()*Math.PI*2, sp=60+Math.random()*170;
+        particles.push({x:cx,y:cy,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:1,color:'#FF5C77',r:2+Math.random()*2}); }
+    }
   }
   const ti=tierIndex();
   if(hit){ comboPop=1; if(ti>tierPrev) onTierUp(ti); }
@@ -788,6 +797,7 @@ function update(dt){
   // high-combo aura easing
   comboPop=Math.max(0,comboPop-dt*3.2);
   screenFlash=Math.max(0,screenFlash-dt*2.2);
+  hurtFlash=Math.max(0,hurtFlash-dt*2.4);
   feverPulse=Math.max(0,feverPulse-dt*1.5);
   const auraTarget=state===S.play?Math.max(0,Math.min(1,combo/120)):0;
   auraLevel += (auraTarget-auraLevel)*Math.min(1,dt*6);
@@ -814,7 +824,7 @@ function draw(){
 
   if(state===S.play || state===S.countdown || state===S.paused || state===S.results){
     drawComboHalo(dim);
-    if(gameMode==='drum') drawDrum(dim); else drawNodes(dim);
+    if(gameMode==='drum') drawDrum(dim); else if(gameMode==='duel') drawDuel(dim); else drawNodes(dim);
     drawPulse(dim);
     drawComboOrbiters(dim);
     drawShockwaves();
@@ -873,6 +883,40 @@ function drawDrum(dim){
     }
     glowDot(L.x, y, minDim*0.026*(1+(n.flash||0)*0.7), L.col, dim);
   }
+}
+
+// Duel mode: enemies march in from the sides; strike them at the ring before they hit the Pulse.
+function drawDuel(dim){
+  const now=songTime()+songStart, gap=drumGap(), yMid=cy;
+  const travel=minDim*0.5, speed=travel/judgeWindows().approach, app=judgeWindows().approach;
+  const lanes=[{x:cx-gap,dir:1,col:ACC1,key:'F  ◄'},{x:cx+gap,dir:-1,col:ACC2,key:'► J'}];
+
+  for(const S of lanes){                        // strike rings + guard lane to the Pulse
+    ctx.save(); ctx.globalAlpha=0.10*dim; ctx.strokeStyle=S.col; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(S.x,yMid); ctx.lineTo(cx,yMid); ctx.stroke(); ctx.restore();
+    ctx.save(); ctx.strokeStyle=S.col; ctx.globalAlpha=0.85*dim; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(S.x,yMid,minDim*0.05,0,Math.PI*2); ctx.stroke(); ctx.restore();
+    txt(S.key,S.x,yMid+minDim*0.11,minDim*0.02,'rgba(154,167,199,.8)','center','600',2);
+  }
+
+  for(const n of chart){
+    if(n.done && n.flash<=0) continue;
+    const et=songStart+n.beat*SPB;
+    if((et-now) > app+0.15) continue;           // not yet on screen
+    const S=lanes[n.lane];
+    const x = n.breached ? cx : (n.done ? S.x : S.x - S.dir*(et-now)*speed);
+    drawEnemy(x, yMid, S.dir, S.col, dim, n.flash||0);
+  }
+}
+function drawEnemy(x,y,dir,col,dim,flash){
+  const r=minDim*0.028*(1+flash*0.7);
+  glowDot(x,y,r*0.6,col,dim*0.9);
+  ctx.save(); ctx.globalAlpha=(0.9)*dim; ctx.strokeStyle=col; ctx.lineWidth=3; ctx.lineJoin='round';
+  ctx.beginPath();                              // chevron pointing toward the Pulse
+  ctx.moveTo(x - dir*r, y - r);
+  ctx.lineTo(x + dir*r, y);
+  ctx.lineTo(x - dir*r, y + r);
+  ctx.stroke(); ctx.restore();
 }
 
 function drawNodes(dim){
@@ -948,8 +992,8 @@ function drawPulse(dim){
   const pop = st>0 ? Math.pow(1-phase,2)*0.35 : 0;
   const core = minDim*0.045*(1+pop+auraLevel*0.28) * (1+ (holding?0.12:0));
 
-  // bind ring (the timing reference) — hidden in drum mode where the pads serve that role
-  if(gameMode!=='drum'){
+  // bind ring (the timing reference) — hidden in two-lane modes where pads/strike-rings serve that role
+  if(gameMode!=='drum' && gameMode!=='duel'){
     ctx.save();
     ctx.strokeStyle=`rgba(232,238,255,${0.5*dim})`; ctx.lineWidth=2;
     ctx.shadowColor=ACC1; ctx.shadowBlur=14+beatFlash*20;
@@ -1028,10 +1072,16 @@ function drawShockwaves(){
   ctx.restore();
 }
 function drawFlashOverlay(){
-  if(screenFlash<=0.01) return;
-  ctx.save(); ctx.globalCompositeOperation='lighter';
-  ctx.fillStyle=`rgba(150,210,255,${screenFlash*0.12})`; ctx.fillRect(0,0,W,H);
-  ctx.restore();
+  if(screenFlash>0.01){
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    ctx.fillStyle=`rgba(150,210,255,${screenFlash*0.12})`; ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+  if(hurtFlash>0.01){                     // Duel: took a hit
+    ctx.save(); ctx.globalCompositeOperation='lighter';
+    ctx.fillStyle=`rgba(255,60,90,${hurtFlash*0.20})`; ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
 }
 function drawCombo(){
   if(combo<=1) return;
@@ -1135,8 +1185,9 @@ function grade(){
 }
 function showResults(){
   hideAll(); resultScreen.hidden=false;
+  const modeName = gameMode==='drum'?'Drum':gameMode==='duel'?'Duel':'Pulse';
   document.getElementById('resTitle').textContent =
-    currentSong.title+' · '+(gameMode==='drum'?'Drum':'Pulse')+' · '+DIFF[difficulty].name;
+    currentSong.title+' · '+modeName+' · '+DIFF[difficulty].name;
   document.getElementById('resGrade').textContent = grade();
   const acc=(accuracy()*100).toFixed(2);
   document.getElementById('resStats').innerHTML = `
@@ -1164,11 +1215,15 @@ const HOWTO={
          <div><b>Tip</b><span>Watch the shrinking ring: strike the instant it meets the bind ring.</span></div>`,
   drum:`<div><b>Kiri &nbsp;◄</b><span>Tombol <b>F</b> / <b>←</b> untuk not <b>cyan</b> di pad kiri.</span></div>
         <div><b>► &nbsp;Kanan</b><span>Tombol <b>J</b> / <b>→</b> untuk not <b>magenta</b> di pad kanan.</span></div>
-        <div><b>Groove</b><span>Ikuti pola kiri-kanan seperti stik drum. Ketukan kuat = dua tangan.</span></div>`
+        <div><b>Groove</b><span>Ikuti pola kiri-kanan seperti stik drum. Ketukan kuat = dua tangan.</span></div>`,
+  duel:`<div><b>Musuh kiri &nbsp;◄</b><span>Tebas dengan <b>F</b> / <b>←</b> saat musuh mencapai ring kiri.</span></div>
+        <div><b>► &nbsp;Musuh kanan</b><span>Tebas dengan <b>J</b> / <b>→</b> saat musuh mencapai ring kanan.</span></div>
+        <div><b>Bertahan</b><span>Musuh yang lolos menghantam Pulse — Flow-mu terkuras. Jaga tempo!</span></div>`
 };
 const KEYHINT={
   pulse:`Tap <kbd>Space</kbd> · klik · atau sentuh &nbsp;•&nbsp; Double = dua ketuk cepat &nbsp;•&nbsp; <kbd>Esc</kbd> jeda`,
-  drum:`Kiri <kbd>F</kbd>/<kbd>←</kbd> · Kanan <kbd>J</kbd>/<kbd>→</kbd> · atau sentuh sisi kiri/kanan &nbsp;•&nbsp; <kbd>Esc</kbd> jeda`
+  drum:`Kiri <kbd>F</kbd>/<kbd>←</kbd> · Kanan <kbd>J</kbd>/<kbd>→</kbd> · atau sentuh sisi kiri/kanan &nbsp;•&nbsp; <kbd>Esc</kbd> jeda`,
+  duel:`Tebas: Kiri <kbd>F</kbd>/<kbd>←</kbd> · Kanan <kbd>J</kbd>/<kbd>→</kbd> · musuh yang lolos melukaimu &nbsp;•&nbsp; <kbd>Esc</kbd> jeda`
 };
 function updateModeUI(){
   document.getElementById('howto').innerHTML = HOWTO[gameMode];
@@ -1241,21 +1296,26 @@ window.addEventListener('keydown', e=>{
   if(e.code==='Escape'){ if(state===S.play) pauseGame(); else if(state===S.paused) resumeGame(); return; }
   if(e.key==='r'||e.key==='R'){ if(state===S.play||state===S.paused){resumeGame();startRun();} return; }
 
-  if(gameMode==='drum'){
+  const twoLane = gameMode==='drum' || gameMode==='duel';
+  if(twoLane){
     if(e.code==='ArrowLeft'||e.code==='KeyF'||e.code==='KeyA'){ e.preventDefault(); if(!e.repeat) onHit(0); }
     else if(e.code==='ArrowRight'||e.code==='KeyJ'||e.code==='KeyL'){ e.preventDefault(); if(!e.repeat) onHit(1); }
   } else {
     if(e.code==='Space'){ e.preventDefault(); if(!e.repeat) onPress(); }
   }
 }, {passive:false});
-window.addEventListener('keyup', e=>{ if(gameMode!=='drum' && e.code==='Space'){ e.preventDefault(); onRelease(); } }, {passive:false});
+window.addEventListener('keyup', e=>{
+  const twoLane = gameMode==='drum' || gameMode==='duel';
+  if(!twoLane && e.code==='Space'){ e.preventDefault(); onRelease(); }
+}, {passive:false});
 
 canvas.addEventListener('pointerdown', e=>{
   e.preventDefault();
-  if(gameMode==='drum') onHit(e.clientX < window.innerWidth/2 ? 0 : 1);
+  const twoLane = gameMode==='drum' || gameMode==='duel';
+  if(twoLane) onHit(e.clientX < window.innerWidth/2 ? 0 : 1);
   else onPress();
 });
-window.addEventListener('pointerup', e=>{ if(gameMode!=='drum') onRelease(); });
+window.addEventListener('pointerup', e=>{ if(gameMode!=='drum' && gameMode!=='duel') onRelease(); });
 
 // kick off render loop
 requestAnimationFrame(frame);
