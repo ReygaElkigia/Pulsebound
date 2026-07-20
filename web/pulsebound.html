@@ -164,13 +164,44 @@ const ctx = canvas.getContext('2d');
 const reduceMotion = matchMedia('(prefers-reduced-motion:reduce)').matches;
 
 let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, minDim = 0;
+// Cap device-pixel-ratio: retina (2x) quadruples fill cost for no gameplay benefit.
+const MAX_DPR = 1.5;
+let bgGrad, edgeGradCyan, edgeGradMagenta, progGrad;
 function resize(){
-  DPR = Math.min(2, window.devicePixelRatio || 1);
+  DPR = Math.min(MAX_DPR, window.devicePixelRatio || 1);
   W = window.innerWidth; H = window.innerHeight;
   canvas.width = Math.floor(W * DPR); canvas.height = Math.floor(H * DPR);
   canvas.style.width = W+'px'; canvas.style.height = H+'px';
   ctx.setTransform(DPR,0,0,DPR,0,0);
   cx = W/2; cy = H/2; minDim = Math.min(W,H);
+  buildGradients();
+}
+function buildGradients(){
+  bgGrad=ctx.createRadialGradient(cx,cy,minDim*0.05,cx,cy,minDim*0.8);
+  bgGrad.addColorStop(0,'rgba(20,26,46,0.55)'); bgGrad.addColorStop(1,'rgba(5,6,10,0)');
+  edgeGradCyan=ctx.createRadialGradient(cx,cy,minDim*0.34,cx,cy,minDim*0.78);
+  edgeGradCyan.addColorStop(0,'rgba(5,6,10,0)'); edgeGradCyan.addColorStop(1,'rgba(40,229,255,0.36)');
+  edgeGradMagenta=ctx.createRadialGradient(cx,cy,minDim*0.34,cx,cy,minDim*0.78);
+  edgeGradMagenta.addColorStop(0,'rgba(5,6,10,0)'); edgeGradMagenta.addColorStop(1,'rgba(255,61,174,0.36)');
+  progGrad=ctx.createLinearGradient(0,0,W,0); progGrad.addColorStop(0,'#28E5FF'); progGrad.addColorStop(1,'#FF3DAE');
+}
+
+// --- Cached glow sprites: draw glow with drawImage instead of expensive shadowBlur ---
+function hexToRgba(hex,a){
+  hex=hex.replace('#',''); if(hex.length===3) hex=hex.split('').map(c=>c+c).join('');
+  const n=parseInt(hex,16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;
+}
+const _glow={};
+function glowSprite(color){
+  if(_glow[color]) return _glow[color];
+  const s=64, c=document.createElement('canvas'); c.width=c.height=s;
+  const g=c.getContext('2d');
+  const grd=g.createRadialGradient(s/2,s/2,0,s/2,s/2,s/2);
+  grd.addColorStop(0,hexToRgba(color,1));
+  grd.addColorStop(0.35,hexToRgba(color,0.55));
+  grd.addColorStop(1,hexToRgba(color,0));
+  g.fillStyle=grd; g.fillRect(0,0,s,s);
+  _glow[color]=c; return c;
 }
 window.addEventListener('resize', resize); resize();
 
@@ -641,12 +672,8 @@ function draw(){
 }
 
 function drawBackground(dim){
-  // radial vignette glow that breathes on the beat
-  const pulse = 0.5 + beatFlash*0.5;
-  const g=ctx.createRadialGradient(cx,cy,minDim*0.05,cx,cy,minDim*0.8);
-  g.addColorStop(0,`rgba(20,26,46,${0.55*dim})`);
-  g.addColorStop(1,'rgba(5,6,10,0)');
-  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  // radial vignette glow (cached gradient; alpha modulated per frame)
+  ctx.save(); ctx.globalAlpha=dim; ctx.fillStyle=bgGrad; ctx.fillRect(0,0,W,H); ctx.restore();
   // faint concentric rings
   ctx.strokeStyle=`rgba(154,167,199,${0.05*dim})`; ctx.lineWidth=1;
   for(let i=1;i<=5;i++){ ctx.beginPath(); ctx.arc(cx,cy,minDim*0.12*i*(1+beatFlash*0.01),0,Math.PI*2); ctx.stroke(); }
@@ -738,14 +765,17 @@ function drawNodes(dim){
   }
 }
 function glowDot(x,y,r,color,dim){
-  ctx.save(); ctx.globalAlpha=dim; ctx.shadowColor=color; ctx.shadowBlur=18;
-  ctx.fillStyle=color; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle='#fff'; ctx.globalAlpha=0.8*dim; ctx.beginPath(); ctx.arc(x,y,r*0.4,0,Math.PI*2); ctx.fill();
+  const R=r*3.4;
+  ctx.save();
+  ctx.globalCompositeOperation='lighter'; ctx.globalAlpha=dim;
+  ctx.drawImage(glowSprite(color), x-R, y-R, R*2, R*2);
+  ctx.globalCompositeOperation='source-over'; ctx.globalAlpha=Math.min(1,0.9*dim);
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(x,y,Math.max(0.5,r*0.45),0,Math.PI*2); ctx.fill();
   ctx.restore();
 }
 function ringMark(x,y,r,color,dim){
-  ctx.save(); ctx.globalAlpha=0.8*dim; ctx.strokeStyle=color; ctx.lineWidth=2;
-  ctx.shadowColor=color; ctx.shadowBlur=12; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.stroke(); ctx.restore();
+  ctx.save(); ctx.globalAlpha=0.85*dim; ctx.strokeStyle=color; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.stroke(); ctx.restore();
 }
 
 function drawPulse(dim){
@@ -766,16 +796,19 @@ function drawPulse(dim){
 
   // flow ring
   ctx.save();
-  ctx.strokeStyle='#FF3DAE'; ctx.lineWidth=4; ctx.lineCap='round';
-  ctx.shadowColor='#FF3DAE'; ctx.shadowBlur=16; ctx.globalAlpha=dim;
+  ctx.strokeStyle='#FF3DAE'; ctx.lineWidth=4; ctx.lineCap='round'; ctx.globalAlpha=dim;
   ctx.beginPath(); ctx.arc(cx,cy,br+10,-Math.PI/2,-Math.PI/2+Math.PI*2*flow); ctx.stroke();
   ctx.restore();
 
-  // the Pulse core
-  const grd=ctx.createRadialGradient(cx,cy,0,cx,cy,core);
-  grd.addColorStop(0,'#ffffff'); grd.addColorStop(0.45,'#28E5FF'); grd.addColorStop(1,'rgba(255,61,174,0.15)');
-  ctx.save(); ctx.shadowColor=auraLevel>0.8?'#FF3DAE':'#28E5FF'; ctx.shadowBlur=40+pop*60+auraLevel*45; ctx.globalAlpha=dim;
-  ctx.fillStyle=grd; ctx.beginPath(); ctx.arc(cx,cy,core,0,Math.PI*2); ctx.fill(); ctx.restore();
+  // the Pulse core — cached glow sprite + solid hot core (no shadowBlur)
+  const glowColor = auraLevel>0.8 ? '#FF3DAE' : '#28E5FF';
+  const R = core*(3.2+auraLevel*1.2+pop*1.5);
+  ctx.save();
+  ctx.globalCompositeOperation='lighter'; ctx.globalAlpha=dim;
+  ctx.drawImage(glowSprite(glowColor), cx-R, cy-R, R*2, R*2);
+  ctx.globalCompositeOperation='source-over'; ctx.globalAlpha=dim;
+  ctx.fillStyle='#eaf6ff'; ctx.beginPath(); ctx.arc(cx,cy,core*0.72,0,Math.PI*2); ctx.fill();
+  ctx.restore();
 }
 
 // ---- high-combo animations ----
@@ -783,11 +816,9 @@ function drawEdgeGlow(dim){
   const e = auraLevel*0.5 + feverPulse*0.4 + beatFlash*0.15*auraLevel;
   if(e<=0.01) return;
   const fever = feverPulse>0.1 || auraLevel>0.85;
-  const hue = fever ? '255,61,174' : '40,229,255';
-  const g=ctx.createRadialGradient(cx,cy,minDim*0.34,cx,cy,minDim*0.78);
-  g.addColorStop(0,'rgba(5,6,10,0)');
-  g.addColorStop(1,`rgba(${hue},${Math.min(0.36,e*0.36)*dim})`);
-  ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.fillStyle=g; ctx.fillRect(0,0,W,H); ctx.restore();
+  ctx.save(); ctx.globalCompositeOperation='lighter'; ctx.globalAlpha=Math.min(1,e)*dim;
+  ctx.fillStyle = fever ? edgeGradMagenta : edgeGradCyan; ctx.fillRect(0,0,W,H);
+  ctx.restore();
 }
 function drawComboHalo(dim){
   if(auraLevel<=0.02) return;
@@ -818,9 +849,8 @@ function drawComboOrbiters(dim){
     if(!reduceMotion){ const a2=a-0.2, x2=cx+Math.cos(a2)*rr, y2=cy+Math.sin(a2)*rr;
       ctx.globalAlpha=0.22*auraLevel*dim; ctx.strokeStyle=col; ctx.lineWidth=sz;
       ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x,y); ctx.stroke(); }
-    ctx.globalAlpha=(0.5+0.5*auraLevel)*dim; ctx.fillStyle=col;
-    ctx.shadowColor=col; ctx.shadowBlur=12+auraLevel*22;
-    ctx.beginPath(); ctx.arc(x,y,sz,0,Math.PI*2); ctx.fill();
+    const R=sz*3.2; ctx.globalAlpha=(0.5+0.5*auraLevel)*dim;
+    ctx.drawImage(glowSprite(col), x-R, y-R, R*2, R*2);
   }
   ctx.restore();
 }
@@ -828,8 +858,8 @@ function drawShockwaves(){
   if(!shockwaves.length) return;
   ctx.save(); ctx.globalCompositeOperation='lighter';
   for(const s of shockwaves){
-    ctx.globalAlpha=Math.max(0,s.life)*0.6; ctx.strokeStyle=s.color;
-    ctx.lineWidth=(2+s.power*4)*Math.max(0.2,s.life); ctx.shadowColor=s.color; ctx.shadowBlur=20;
+    ctx.globalAlpha=Math.max(0,s.life)*0.55; ctx.strokeStyle=s.color;
+    ctx.lineWidth=(2+s.power*4)*Math.max(0.2,s.life);
     ctx.beginPath(); ctx.arc(cx,cy,s.r,0,Math.PI*2); ctx.stroke();
   }
   ctx.restore();
@@ -860,11 +890,12 @@ function drawCombo(){
 }
 
 function drawParticles(){
+  if(!particles.length) return;
   ctx.save(); ctx.globalCompositeOperation='lighter';
   for(const p of particles){
-    ctx.globalAlpha=Math.max(0,p.life); ctx.fillStyle=p.color;
-    ctx.shadowColor=p.color; ctx.shadowBlur=10;
-    ctx.beginPath(); ctx.arc(p.x,p.y,p.r*p.life,0,Math.PI*2); ctx.fill();
+    const R=Math.max(1,p.r*p.life)*3.0;
+    ctx.globalAlpha=Math.max(0,p.life);
+    ctx.drawImage(glowSprite(p.color), p.x-R, p.y-R, R*2, R*2);
   }
   ctx.restore();
 }
@@ -900,8 +931,7 @@ function drawHUD(){
   // progress bar (thin, top)
   const prog = Math.max(0,Math.min(1, songTime()/((lastNodeTime-songStart)+2.2)));
   ctx.fillStyle='rgba(154,167,199,.15)'; ctx.fillRect(0,0,W,3);
-  const pg=ctx.createLinearGradient(0,0,W,0); pg.addColorStop(0,'#28E5FF'); pg.addColorStop(1,'#FF3DAE');
-  ctx.fillStyle=pg; ctx.fillRect(0,0,W*prog,3);
+  ctx.fillStyle=progGrad; ctx.fillRect(0,0,W*prog,3);
   // judgment popup
   if(popup.t>0){
     ctx.save(); ctx.globalAlpha=Math.min(1,popup.t*4); ctx.shadowColor=popup.color; ctx.shadowBlur=16;
