@@ -22,7 +22,7 @@
 
   /* ---- Overlays ---- */
   .screen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
-    gap:26px;padding:32px;text-align:center;z-index:10;
+    gap:26px;padding:32px;text-align:center;z-index:10;overflow-y:auto;
     background:radial-gradient(120% 90% at 50% 42%, rgba(10,12,20,.72) 0%, rgba(5,6,10,.94) 70%);
     backdrop-filter:blur(3px)}
   .screen[hidden]{display:none}
@@ -49,7 +49,19 @@
   .chip:hover{border-color:rgba(40,229,255,.55);box-shadow:0 0 0 1px rgba(40,229,255,.18)}
   .chip[aria-pressed="true"]{color:var(--void);background:linear-gradient(100deg,var(--cyan),var(--magenta));
     border-color:transparent;box-shadow:0 0 24px rgba(40,229,255,.35)}
-  .chip:focus-visible,.btn:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}
+  .chip:focus-visible,.btn:focus-visible,.song:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}
+
+  /* song picker */
+  .songs{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:10px;width:100%;max-width:560px}
+  .song{--acc:#28E5FF;display:flex;flex-direction:column;gap:5px;align-items:flex-start;text-align:left;
+    padding:12px 14px;border:1px solid var(--line);border-left:3px solid var(--acc);border-radius:12px;
+    background:rgba(12,15,24,.4);color:var(--ink);cursor:pointer;
+    transition:border-color .18s,box-shadow .18s,background .18s,transform .1s}
+  .song:hover{background:rgba(20,24,38,.6);transform:translateY(-1px)}
+  .song[aria-pressed="true"]{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),0 0 30px -8px var(--acc)}
+  .song .s-title{font-family:var(--font-ui);font-weight:700;font-size:15px;letter-spacing:.01em}
+  .song .s-meta{font-family:var(--font-mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .song .s-stars{color:var(--acc);letter-spacing:.05em}
 
   .btn{font-family:var(--font-mono);font-size:15px;letter-spacing:.2em;text-transform:uppercase;font-weight:600;
     color:var(--void);background:linear-gradient(100deg,var(--cyan),var(--magenta));
@@ -108,6 +120,8 @@
       <button class="chip" data-mode="pulse" aria-pressed="true">Pulse</button>
       <button class="chip" data-mode="drum">Drum · 2 tombol</button>
     </div>
+    <div class="label">Track</div>
+    <div class="songs" id="songRow"></div>
     <div class="label">Select difficulty</div>
     <div class="row" id="diffRow">
       <button class="chip" data-diff="0">Easy</button>
@@ -167,6 +181,7 @@ let W = 0, H = 0, DPR = 1, cx = 0, cy = 0, minDim = 0;
 // Cap device-pixel-ratio: retina (2x) quadruples fill cost for no gameplay benefit.
 const MAX_DPR = 1.5;
 let bgGrad, edgeGradCyan, edgeGradMagenta, progGrad;
+let ACC1='#28E5FF', ACC2='#FF3DAE';   // per-song accent duo (themes the visuals)
 function resize(){
   DPR = Math.min(MAX_DPR, window.devicePixelRatio || 1);
   W = window.innerWidth; H = window.innerHeight;
@@ -180,10 +195,10 @@ function buildGradients(){
   bgGrad=ctx.createRadialGradient(cx,cy,minDim*0.05,cx,cy,minDim*0.8);
   bgGrad.addColorStop(0,'rgba(20,26,46,0.55)'); bgGrad.addColorStop(1,'rgba(5,6,10,0)');
   edgeGradCyan=ctx.createRadialGradient(cx,cy,minDim*0.34,cx,cy,minDim*0.78);
-  edgeGradCyan.addColorStop(0,'rgba(5,6,10,0)'); edgeGradCyan.addColorStop(1,'rgba(40,229,255,0.36)');
+  edgeGradCyan.addColorStop(0,'rgba(5,6,10,0)'); edgeGradCyan.addColorStop(1,hexToRgba(ACC1,0.36));
   edgeGradMagenta=ctx.createRadialGradient(cx,cy,minDim*0.34,cx,cy,minDim*0.78);
-  edgeGradMagenta.addColorStop(0,'rgba(5,6,10,0)'); edgeGradMagenta.addColorStop(1,'rgba(255,61,174,0.36)');
-  progGrad=ctx.createLinearGradient(0,0,W,0); progGrad.addColorStop(0,'#28E5FF'); progGrad.addColorStop(1,'#FF3DAE');
+  edgeGradMagenta.addColorStop(0,'rgba(5,6,10,0)'); edgeGradMagenta.addColorStop(1,hexToRgba(ACC2,0.36));
+  progGrad=ctx.createLinearGradient(0,0,W,0); progGrad.addColorStop(0,ACC1); progGrad.addColorStop(1,ACC2);
 }
 
 // --- Cached glow sprites: draw glow with drawImage instead of expensive shadowBlur ---
@@ -206,8 +221,8 @@ function glowSprite(color){
 window.addEventListener('resize', resize); resize();
 
 // ---------- Config ----------
-const BPM = 124;
-const SPB = 60 / BPM;           // seconds per beat
+let BPM = 124;                 // set per selected song
+let SPB = 60 / BPM;            // seconds per beat
 const BEATS_PER_BAR = 4;
 const BARS = 64;
 const LEAD_IN = 3.0;            // seconds of count-in before beat 0
@@ -242,13 +257,39 @@ const NOTE = {};
 (function(){const names=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
   for(let o=1;o<6;o++)for(let i=0;i<12;i++){NOTE[names[i]+o]=440*Math.pow(2,(o*12+i-57)/12);}})();
 
-// i-VI-III-VII in A minor, one chord per bar
-const PROG = [
-  {root:'A2', tones:['A3','C4','E4']},
-  {root:'F2', tones:['F3','A3','C4']},
-  {root:'C3', tones:['C4','E4','G4']},
-  {root:'G2', tones:['G3','B3','D4']},
+// ---- Song catalog: each track is synthesized live; tempo + harmony + accent duo give identity ----
+const SONGS = [
+  { id:'first-light', title:'First Light', mood:'Melodic', bpm:124, stars:2,
+    acc1:'#28E5FF', acc2:'#FF3DAE',
+    prog:[{root:'A2',tones:['A3','C4','E4']},{root:'F2',tones:['F3','A3','C4']},
+          {root:'C3',tones:['C4','E4','G4']},{root:'G2',tones:['G3','B3','D4']}] },
+  { id:'neon-tide', title:'Neon Tide', mood:'Dreamy', bpm:100, stars:1,
+    acc1:'#2BE0C4', acc2:'#9B6BFF',
+    prog:[{root:'D2',tones:['D3','F3','A3']},{root:'A#2',tones:['A#3','D4','F4']},
+          {root:'F2',tones:['F3','A3','C4']},{root:'C3',tones:['C4','E4','G4']}] },
+  { id:'starfall', title:'Starfall', mood:'Uplifting', bpm:128, stars:2,
+    acc1:'#FFC24B', acc2:'#48D6FF',
+    prog:[{root:'C3',tones:['C4','E4','G4']},{root:'G2',tones:['G3','B3','D4']},
+          {root:'A2',tones:['A3','C4','E4']},{root:'F2',tones:['F3','A3','C4']}] },
+  { id:'voltage', title:'Voltage', mood:'Aggressive', bpm:140, stars:3,
+    acc1:'#B6FF3D', acc2:'#FF4D5E',
+    prog:[{root:'E2',tones:['E3','G3','B3']},{root:'C3',tones:['C4','E4','G4']},
+          {root:'G2',tones:['G3','B3','D4']},{root:'D3',tones:['D4','F#4','A4']}] },
+  { id:'eclipse', title:'Eclipse', mood:'Dark', bpm:132, stars:3,
+    acc1:'#FF3DAE', acc2:'#4C6BFF',
+    prog:[{root:'C3',tones:['C4','D#4','G4']},{root:'G#2',tones:['G#3','C4','D#4']},
+          {root:'D#3',tones:['D#4','G4','A#4']},{root:'A#2',tones:['A#3','D4','F4']}] },
 ];
+let currentSong = SONGS[0];
+let PROG = currentSong.prog;      // one chord per bar, cycled
+
+function applySong(s){ currentSong=s; BPM=s.bpm; SPB=60/BPM; PROG=s.prog; ACC1=s.acc1; ACC2=s.acc2; }
+function selectSong(id){
+  const s=SONGS.find(x=>x.id===id); if(!s) return;
+  applySong(s); buildGradients();
+  const row=document.getElementById('songRow');
+  if(row) [...row.children].forEach(c=>c.setAttribute('aria-pressed', c.dataset.song===id ? 'true':'false'));
+}
 
 function env(g, t, a, d, peak, sus){
   g.gain.cancelScheduledValues(t);
@@ -598,7 +639,7 @@ function onTierUp(ti){
   for(let i=0;i<ringN;i++){ const a=i/ringN*Math.PI*2;
     particles.push({x:cx+Math.cos(a)*br, y:cy+Math.sin(a)*br,
       vx:Math.cos(a)*(120+ti*40), vy:Math.sin(a)*(120+ti*40), life:1,
-      color:i%2?'#28E5FF':'#FF3DAE', r:2+Math.random()*2}); }
+      color:i%2?ACC1:ACC2, r:2+Math.random()*2}); }
   tierChime(ti);
 }
 function onComboLost(){ screenFlash=Math.min(1,0.22); spawnShock('#FF5C77',0.5); }
@@ -680,18 +721,18 @@ function drawBackground(dim){
   // radial spokes — brighten and slowly rotate as the combo climbs
   ctx.save(); ctx.globalAlpha=(0.05+auraLevel*0.06)*dim;
   const off=auraRot*0.15;
-  for(let i=0;i<12;i++){const a=i/12*Math.PI*2+off; ctx.strokeStyle=auraLevel>0.6?'#28E5FF':'#9AA7C7';
+  for(let i=0;i<12;i++){const a=i/12*Math.PI*2+off; ctx.strokeStyle=auraLevel>0.6?ACC1:'#9AA7C7';
     ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+Math.cos(a)*minDim,cy+Math.sin(a)*minDim); ctx.stroke();}
   ctx.restore();
 }
 
-function typeColor(t){ return t==='double'?'#FFE27A':t==='hold'?'#FF3DAE':'#28E5FF'; }
+function typeColor(t){ return t==='double'?'#FFE27A':t==='hold'?ACC2:ACC1; }
 
 // Drum mode: two lanes flanking the Pulse; notes fall to the pads on the beat.
 function drawDrum(dim){
   const now=songTime()+songStart, gap=drumGap(), padY=cy;
   const spawnY=cy-minDim*0.55, speed=(padY-spawnY)/judgeWindows().approach, app=judgeWindows().approach;
-  const lanes=[{x:cx-gap,col:'#28E5FF',key:'F  ◄'},{x:cx+gap,col:'#FF3DAE',key:'► J'}];
+  const lanes=[{x:cx-gap,col:ACC1,key:'F  ◄'},{x:cx+gap,col:ACC2,key:'► J'}];
 
   // lane guides + pad rings + key labels
   for(const L of lanes){
@@ -789,19 +830,19 @@ function drawPulse(dim){
   if(gameMode!=='drum'){
     ctx.save();
     ctx.strokeStyle=`rgba(232,238,255,${0.5*dim})`; ctx.lineWidth=2;
-    ctx.shadowColor='#28E5FF'; ctx.shadowBlur=14+beatFlash*20;
+    ctx.shadowColor=ACC1; ctx.shadowBlur=14+beatFlash*20;
     ctx.beginPath(); ctx.arc(cx,cy,br,0,Math.PI*2); ctx.stroke();
     ctx.restore();
   }
 
   // flow ring
   ctx.save();
-  ctx.strokeStyle='#FF3DAE'; ctx.lineWidth=4; ctx.lineCap='round'; ctx.globalAlpha=dim;
+  ctx.strokeStyle=ACC2; ctx.lineWidth=4; ctx.lineCap='round'; ctx.globalAlpha=dim;
   ctx.beginPath(); ctx.arc(cx,cy,br+10,-Math.PI/2,-Math.PI/2+Math.PI*2*flow); ctx.stroke();
   ctx.restore();
 
   // the Pulse core — cached glow sprite + solid hot core (no shadowBlur)
-  const glowColor = auraLevel>0.8 ? '#FF3DAE' : '#28E5FF';
+  const glowColor = auraLevel>0.8 ? ACC2 : ACC1;
   const R = core*(3.2+auraLevel*1.2+pop*1.5);
   ctx.save();
   ctx.globalCompositeOperation='lighter'; ctx.globalAlpha=dim;
@@ -829,7 +870,7 @@ function drawComboHalo(dim){
     const rr=br*(1.5+i*0.3) + Math.sin(auraRot*1.3+i)*br*0.05;
     const rot=auraRot*(i%2?-1:1)*(0.6+i*0.12);
     const span=Math.PI*(0.5+0.3*Math.sin(auraRot+i));
-    ctx.strokeStyle=(i%2?'rgba(40,229,255,':'rgba(255,61,174,')+((0.06+0.13*auraLevel)*dim)+')';
+    ctx.strokeStyle=hexToRgba(i%2?ACC1:ACC2,(0.06+0.13*auraLevel)*dim);
     ctx.lineWidth=2+auraLevel*2.5; ctx.beginPath(); ctx.arc(cx,cy,rr,rot,rot+span); ctx.stroke();
   }
   ctx.restore();
@@ -844,7 +885,7 @@ function drawComboOrbiters(dim){
     const wob=Math.sin(auraRot*2+i*1.7)*0.12;
     const rr=br*(1.3+wob);
     const x=cx+Math.cos(a)*rr, y=cy+Math.sin(a)*rr;
-    const col=i%2?'#28E5FF':'#FF3DAE';
+    const col=i%2?ACC1:ACC2;
     const sz=Math.max(0.5,(minDim*0.006)*(1+auraLevel)*(1+0.4*Math.sin(auraRot*3+i)));
     if(!reduceMotion){ const a2=a-0.2, x2=cx+Math.cos(a2)*rr, y2=cy+Math.sin(a2)*rr;
       ctx.globalAlpha=0.22*auraLevel*dim; ctx.strokeStyle=col; ctx.lineWidth=sz;
@@ -881,12 +922,12 @@ function drawCombo(){
   ctx.shadowBlur=18+auraLevel*46+comboPop*20;
   if(auraLevel>0.35 && !reduceMotion){          // chromatic split when the streak is hot
     const dx=2+auraLevel*5;
-    ctx.globalAlpha=0.55; ctx.shadowColor='#28E5FF'; ctx.fillStyle='#28E5FF'; ctx.fillText(s,cx-dx,y);
-    ctx.shadowColor='#FF3DAE'; ctx.fillStyle='#FF3DAE'; ctx.fillText(s,cx+dx,y); ctx.globalAlpha=1;
+    ctx.globalAlpha=0.55; ctx.shadowColor=ACC1; ctx.fillStyle=ACC1; ctx.fillText(s,cx-dx,y);
+    ctx.shadowColor=ACC2; ctx.fillStyle=ACC2; ctx.fillText(s,cx+dx,y); ctx.globalAlpha=1;
   }
-  ctx.shadowColor=auraLevel>0.8?'#FF3DAE':'#28E5FF'; ctx.fillStyle='#E8EEFF'; ctx.fillText(s,cx,y);
+  ctx.shadowColor=auraLevel>0.8?ACC2:ACC1; ctx.fillStyle='#E8EEFF'; ctx.fillText(s,cx,y);
   ctx.restore();
-  txt('COMBO', cx, cy - bindR()-minDim*0.035, minDim*0.016, auraLevel>0.5?'#FF3DAE':'#9AA7C7','center','500',3);
+  txt('COMBO', cx, cy - bindR()-minDim*0.035, minDim*0.016, auraLevel>0.5?ACC2:'#9AA7C7','center','500',3);
 }
 
 function drawParticles(){
@@ -921,12 +962,12 @@ function drawHUD(){
     ctx.restore();
   }
   // multiplier under pulse
-  txt('×'+multiplier().toFixed(multiplier()%1?1:0), cx, cy+bindR()+minDim*0.08, minDim*0.03,'#FF3DAE','center','700');
+  txt('×'+multiplier().toFixed(multiplier()%1?1:0), cx, cy+bindR()+minDim*0.08, minDim*0.03,ACC2,'center','700');
   // score / accuracy top
   txt(score.toLocaleString(), W-pad, pad+minDim*0.02, minDim*0.032,'#E8EEFF','right','700');
   txt('SCORE', W-pad, pad+minDim*0.038, 11,'#9AA7C7','right','500',3);
   const acc=accuracy();
-  txt((acc*100).toFixed(1)+'%', pad, pad+minDim*0.02, minDim*0.028,'#28E5FF','left','700');
+  txt((acc*100).toFixed(1)+'%', pad, pad+minDim*0.02, minDim*0.028,ACC1,'left','700');
   txt('ACCURACY', pad, pad+minDim*0.036, 11,'#9AA7C7','left','500',3);
   // progress bar (thin, top)
   const prog = Math.max(0,Math.min(1, songTime()/((lastNodeTime-songStart)+2.2)));
@@ -973,7 +1014,7 @@ function grade(){
 function showResults(){
   hideAll(); resultScreen.hidden=false;
   document.getElementById('resTitle').textContent =
-    'First Light · '+(gameMode==='drum'?'Drum':'Pulse')+' · '+DIFF[difficulty].name;
+    currentSong.title+' · '+(gameMode==='drum'?'Drum':'Pulse')+' · '+DIFF[difficulty].name;
   document.getElementById('resGrade').textContent = grade();
   const acc=(accuracy()*100).toFixed(2);
   document.getElementById('resStats').innerHTML = `
@@ -1018,6 +1059,18 @@ document.getElementById('modeRow').addEventListener('click', e=>{
   updateModeUI();
 });
 updateModeUI();
+
+// song picker
+function renderSongCards(){
+  const row=document.getElementById('songRow'); if(!row) return;
+  row.innerHTML=SONGS.map(s=>`
+    <button class="song" data-song="${s.id}" style="--acc:${s.acc1}" aria-pressed="${s.id===currentSong.id}">
+      <span class="s-title">${s.title}</span>
+      <span class="s-meta">${s.mood} · ${s.bpm} BPM · <span class="s-stars">${'★'.repeat(s.stars)}</span></span>
+    </button>`).join('');
+  row.addEventListener('click', e=>{ const b=e.target.closest('.song'); if(b) selectSong(b.dataset.song); });
+}
+renderSongCards();
 document.getElementById('startBtn').onclick = ()=>startRun();
 document.getElementById('retryBtn').onclick = ()=>startRun();
 document.getElementById('menuBtn').onclick = ()=>{state=S.menu;hideAll();startScreen.hidden=false;};
