@@ -390,6 +390,8 @@ function scheduler(){
 //  CHART  (nodes on the beat grid, synced to the music)
 // ============================================================
 let chart = [], nodeId = 0, lastNodeTime = 0;
+let items = [];                    // Dash mode pickups (weapon / double)
+let buffDouble = 0, buffWeapon = 0; // active power-up timers (seconds)
 
 function buildChart(diff){
   const cfg = DIFF[diff]; chart = []; nodeId = 0;
@@ -469,6 +471,38 @@ function buildDrumChart(diff){
   chart=chart.filter(n=>{const k=n.beat.toFixed(3)+':'+n.lane; if(seen.has(k))return false; seen.add(k); return true;});
   chart.sort((a,b)=>a.beat-b.beat);
   lastNodeTime = chart.reduce((m,n)=>Math.max(m,n.beat),0)*SPB + songStart;
+}
+
+// Dash mode chart: waves of soldiers on two lanes, occasional BIG soldiers (2 shots),
+// and power-up items that drift in mid-song.
+function buildDashChart(diff){
+  const cfg=DIFF[diff]; chart=[]; items=[]; nodeId=0;
+  const add=(beat,lane,opts)=>chart.push(Object.assign(
+    {id:nodeId++,type:'standard',lane,beat,pressed:0,started:false,released:false,done:false,flash:0},opts||{}));
+  const bigAdd=(beat,lane)=>add(beat,lane,{type:'double',secondBeat:beat+0.5,big:true});
+
+  for(let bar=0;bar<BARS;bar++){
+    const b0=bar*BEATS_PER_BAR;
+    const section=bar<8?0 : bar<24?1 : bar<44?2 : bar<60?3 : 4;
+    if(section===4){ add(b0,0); if(bar%2===0) add(b0+2,1); continue; }
+
+    if(section>=2 && bar%8===4){          // dedicated big-soldier bar
+      bigAdd(b0,0); add(b0+2,1); add(b0+3,0);
+    } else {
+      add(b0,0); add(b0+1,1); add(b0+2,0); add(b0+3,1);
+      if(section>=1 && cfg.offbeats) add(b0+2.5,1);
+      if(section>=2){ add(b0+0.5,1); add(b0+1.5,0); }
+      if(section>=3 && cfg.climax && bar%4===3){ add(b0+3.25,0); add(b0+3.75,1); }
+    }
+    if(bar>0 && bar%8===0){               // a power-up drifts in on an empty beat
+      const n=bar/8, kind = n%2 ? 'weapon' : 'double';
+      items.push({beat:b0+3.5, lane:n%2, kind, collected:false, flash:0});
+    }
+  }
+  const seen=new Set();
+  chart=chart.filter(x=>{const k=x.beat.toFixed(3)+':'+x.lane; if(seen.has(k))return false; seen.add(k); return true;});
+  chart.sort((a,b)=>a.beat-b.beat);
+  lastNodeTime=chart.reduce((m,n)=>Math.max(m,(n.secondBeat??n.beat)),0)*SPB+songStart;
 }
 
 // ============================================================
@@ -596,6 +630,7 @@ function startRun(){
   counts={perfect:0,great:0,good:0,miss:0};
   particles=[];popup.t=0;banner.t=0;lastBeatSeen=-1;
   comboPop=0;auraLevel=0;auraRot=0;tierPrev=0;shockwaves=[];feverPulse=0;screenFlash=0;hurtFlash=0;dashPunch=0;
+  items=[];buffDouble=0;buffWeapon=0;
   stopCustomAudio();
   songStart = actx.currentTime + LEAD_IN;
   if(schedTimer){ clearInterval(schedTimer); schedTimer=null; }
@@ -603,7 +638,9 @@ function startRun(){
     buildCustomChart(difficulty);      // live audio + auto-mapped beats
     playCustomAudio(songStart);
   } else {
-    if(gameMode==='drum'||gameMode==='duel') buildDrumChart(difficulty); else buildChart(difficulty);
+    if(gameMode==='duel') buildDashChart(difficulty);
+    else if(gameMode==='drum') buildDrumChart(difficulty);
+    else buildChart(difficulty);
     buildMusic();                      // synthesized track
     schedTimer = setInterval(scheduler, 25);
   }
@@ -646,9 +683,11 @@ function register(kind, n){
   const [hx,hy] = nodeHitPos(n);
   if(hit){
     combo++; maxCombo=Math.max(maxCombo,combo);
-    score += Math.round(1000 * (kind==='perfect'?1:kind==='great'?0.75:0.4) * multiplier());
+    const buffMult=(buffDouble>0?2:1)*(buffWeapon>0?1.5:1);   // power-ups multiply score
+    score += Math.round(1000 * (kind==='perfect'?1:kind==='great'?0.75:0.4) * multiplier() * buffMult);
     flow = Math.min(1, flow + (kind==='perfect'?0.03:kind==='great'?0.012:0));
-    burst(hx,hy, kind==='perfect'?'#28E5FF':kind==='great'?'#6EF08C':'#FFE27A', kind==='perfect'?18:12);
+    const bc = buffWeapon>0 ? '#FFE27A' : (kind==='perfect'?'#28E5FF':kind==='great'?'#6EF08C':'#FFE27A');
+    burst(hx,hy, bc, (kind==='perfect'?18:12)+(buffWeapon>0?8:0));
     if(!reduceMotion) shake = Math.min(9, shake + (kind==='perfect'?4:2));
   } else {
     combo=0; tier=Math.max(0,tier-1);
@@ -717,9 +756,30 @@ function onHit(lane){
     const et=nextPressTime(n); if(et==null) continue;
     const d=Math.abs(now-et); if(d<bd){bd=d;best=n;}
   }
-  if(!best || bd>w.good){ if(actx) hitSfx(actx.currentTime,'miss'); return; }  // whiffed
-  best.pressed=1; best.done=true; register(classify(bd), best);
+  // nearest collectible item in this lane
+  let bi=null,bid=Infinity;
+  for(const it of items){ if(it.collected||it.lane!==lane) continue;
+    const d=Math.abs(now-(songStart+it.beat*SPB)); if(d<bid){bid=d;bi=it;} }
+
+  const enemyOk = best && bd<=w.good;
+  const itemOk  = bi && bid<=w.good;
+  if(itemOk && (!enemyOk || bid<bd)){ collectItem(bi); if(gameMode==='duel'){dashPunch=1;dashPunchLane=lane;} return; }
+  if(!enemyOk){ if(actx) hitSfx(actx.currentTime,'miss'); return; }   // whiffed
+
+  const kind=classify(bd);
+  if(best.type==='double'){ best.pressed++; register(kind,best); if(best.pressed>=2) best.done=true; } // BIG soldier: 2 shots
+  else { best.pressed=1; best.done=true; register(kind,best); }
   if(gameMode==='duel'){ dashPunch=1; dashPunchLane=lane; }   // character lunges to the hit lane
+}
+function collectItem(it){
+  it.collected=true; it.flash=1;
+  const [ix,iy]=nodeHitPos({lane:it.lane});
+  if(it.kind==='double'){ buffDouble=8; burst(ix,iy,'#6EF08C',18);
+    banner={text:'SKOR ×2!', t:1.2, color:'#6EF08C'}; }
+  else { buffWeapon=8; burst(ix,iy,'#FFE27A',18);
+    banner={text:'SENJATA BARU!', t:1.2, color:'#FFE27A'}; }
+  if(!reduceMotion) shake=Math.min(12,shake+4);
+  if(actx) hitSfx(actx.currentTime,'perfect');
 }
 
 function autoMiss(){
@@ -790,6 +850,8 @@ function update(dt){
   }
   if(state===S.play){
     autoMiss();
+    buffDouble=Math.max(0,buffDouble-dt); buffWeapon=Math.max(0,buffWeapon-dt);
+    for(const it of items) if(it.flash>0) it.flash=Math.max(0,it.flash-dt*4);
     const st=songTime();
     const beat=st/SPB, whole=Math.floor(beat);
     if(whole>lastBeatSeen && st>=0){ lastBeatSeen=whole; beatFlash=1; }
@@ -906,28 +968,58 @@ function drawDuel(dim){
     ctx.save(); ctx.globalAlpha=0.14*dim; ctx.strokeStyle=laneCol[L]; ctx.lineWidth=2;
     ctx.beginPath(); ctx.moveTo(chx,y); ctx.lineTo(W-8,y); ctx.stroke(); ctx.restore();
   }
-  // enemies scrolling right -> left
+  // power-up items drifting in
+  for(const it of items){
+    if(it.collected && it.flash<=0) continue;
+    const x = it.collected ? chx : chx + (songStart+it.beat*SPB-now)*speed;
+    if(x > W+50 || x < -60) continue;
+    drawItem(x, cy+(it.lane?off:-off), it.kind, dim, it.flash||0);
+  }
+  // enemy soldiers scrolling right -> left (big ones hold after the first shot)
   for(const n of chart){
     if(n.done && n.flash<=0) continue;
-    const et=songStart+n.beat*SPB;
-    const x = n.done ? chx : chx + (et-now)*speed;
+    const vb = (n.type==='double' && n.pressed>=1) ? n.secondBeat : n.beat;
+    const x = n.done ? chx : chx + (songStart+vb*SPB-now)*speed;
     if(x > W+50) continue;                       // not on screen yet
-    drawDashEnemy(x, cy+(n.lane?off:-off), laneCol[n.lane], dim, n.flash||0, n.lane);
+    drawSoldier(x, cy+(n.lane?off:-off), laneCol[n.lane], dim, n.flash||0, n);
   }
   drawDashChar(chx, dim);
   txt('F / ↑', chx, cy-off-minDim*0.035, minDim*0.017,'rgba(154,167,199,.7)','center','600',2);
   txt('J / ↓', chx, cy+off+minDim*0.055, minDim*0.017,'rgba(154,167,199,.7)','center','600',2);
 }
-function drawDashEnemy(x,y,col,dim,flash,lane){
-  const r=minDim*0.032*(1+flash*0.7);
-  glowDot(x,y,r*0.55,col,dim*0.9);
-  ctx.save(); ctx.globalAlpha=0.95*dim; ctx.strokeStyle=col; ctx.lineWidth=3; ctx.lineJoin='round'; ctx.translate(x,y);
-  if(lane===0){ // top = diamond
-    ctx.beginPath(); ctx.moveTo(0,-r); ctx.lineTo(r,0); ctx.lineTo(0,r); ctx.lineTo(-r,0); ctx.closePath(); ctx.stroke();
-  } else {      // bottom = ring
-    ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
+// A stylised neon soldier, facing left (toward the player), legs marching on the beat.
+function drawSoldier(x,y,col,dim,flash,n){
+  const big=n.big;
+  const s=minDim*(big?0.058:0.04)*(1+flash*0.45);
+  glowDot(x,y,s*0.5,col,dim*(big?0.95:0.8));
+  ctx.save(); ctx.translate(x,y); ctx.globalAlpha=dim; ctx.strokeStyle=col; ctx.fillStyle=col;
+  ctx.lineWidth=big?3.4:2.4; ctx.lineJoin='round'; ctx.lineCap='round';
+  const ph=Math.sin((songTime()/SPB)*Math.PI*2 + x*0.04), step=s*0.3*ph;
+  // legs (marching)
+  ctx.beginPath(); ctx.moveTo(0,s*0.18); ctx.lineTo(-step,s*0.72); ctx.moveTo(0,s*0.18); ctx.lineTo(step,s*0.72); ctx.stroke();
+  // torso
+  ctx.beginPath(); ctx.moveTo(0,-s*0.32); ctx.lineTo(0,s*0.2); ctx.stroke();
+  // rifle + arm pointing left toward the player
+  ctx.beginPath(); ctx.moveTo(-s*0.05,-s*0.12); ctx.lineTo(-s*0.62,-s*0.16); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0,-s*0.12); ctx.lineTo(-s*0.24,s*0.02); ctx.stroke();
+  // head + helmet
+  ctx.beginPath(); ctx.arc(0,-s*0.48,s*0.17,0,Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0,-s*0.52,s*0.24,Math.PI*1.02,Math.PI*1.98); ctx.stroke();
+  if(big){                                  // brute: front shield + HP pips
+    ctx.beginPath(); ctx.arc(-s*0.55,0,s*0.4,-Math.PI*0.55,Math.PI*0.55); ctx.stroke();
+    const hp=2-(n.pressed||0);
+    for(let i=0;i<2;i++){ ctx.globalAlpha=(i<hp?1:0.22)*dim;
+      ctx.beginPath(); ctx.arc(-s*0.12+i*s*0.3,-s*0.95,s*0.09,0,Math.PI*2); ctx.fill(); }
   }
   ctx.restore();
+}
+function drawItem(x,y,kind,dim,flash){
+  const r=minDim*0.03*(1+flash*0.8), col=kind==='double'?'#6EF08C':'#FFE27A';
+  glowDot(x,y,r*0.7,col,dim);
+  ctx.save(); ctx.translate(x,y); ctx.globalAlpha=dim; ctx.strokeStyle=col; ctx.lineWidth=2.5; ctx.rotate(songTime()*2);
+  ctx.beginPath(); ctx.moveTo(0,-r); ctx.lineTo(r,0); ctx.lineTo(0,r); ctx.lineTo(-r,0); ctx.closePath(); ctx.stroke();
+  ctx.restore();
+  txt(kind==='double'?'×2':'⚔', x, y+minDim*0.007, minDim*0.02, col,'center','800');
 }
 function drawDashChar(chx,dim){
   const y = cy + dashPunch*(dashPunchLane?1:-1)*minDim*0.03;
@@ -1166,6 +1258,10 @@ function drawHUD(){
   const acc=accuracy();
   txt((acc*100).toFixed(1)+'%', pad, pad+minDim*0.02, minDim*0.028,ACC1,'left','700');
   txt('ACCURACY', pad, pad+minDim*0.036, 11,'#9AA7C7','left','500',3);
+  // active power-ups (Dash mode)
+  let by=pad+minDim*0.075;
+  if(buffDouble>0){ txt('×2  '+Math.ceil(buffDouble)+'s', pad, by, minDim*0.02,'#6EF08C','left','700'); by+=minDim*0.032; }
+  if(buffWeapon>0){ txt('⚔  '+Math.ceil(buffWeapon)+'s', pad, by, minDim*0.02,'#FFE27A','left','700'); }
   // progress bar (thin, top)
   const prog = Math.max(0,Math.min(1, songTime()/((lastNodeTime-songStart)+2.2)));
   ctx.fillStyle='rgba(154,167,199,.15)'; ctx.fillRect(0,0,W,3);
@@ -1241,9 +1337,9 @@ const HOWTO={
   drum:`<div><b>Kiri &nbsp;◄</b><span>Tombol <b>F</b> / <b>←</b> untuk not <b>cyan</b> di pad kiri.</span></div>
         <div><b>► &nbsp;Kanan</b><span>Tombol <b>J</b> / <b>→</b> untuk not <b>magenta</b> di pad kanan.</span></div>
         <div><b>Groove</b><span>Ikuti pola kiri-kanan seperti stik drum. Ketukan kuat = dua tangan.</span></div>`,
-  duel:`<div><b>Atas ▲</b><span>Musuh jalur atas (belah ketupat) — pukul <b>F</b> / <b>↑</b> saat sampai di karakter.</span></div>
-        <div><b>Bawah ▼</b><span>Musuh jalur bawah (lingkaran) — pukul <b>J</b> / <b>↓</b>.</span></div>
-        <div><b>Auto-run</b><span>Karakter di kiri, musuh meluncur dari kanan mengikuti irama — pilih jalur yang tepat, yang lolos melukaimu.</span></div>`
+  duel:`<div><b>Prajurit</b><span>Serdadu menyerbu dari kanan di 2 jalur. Tembak jalur atas <b>F</b>/<b>↑</b>, bawah <b>J</b>/<b>↓</b>. Jangan biarkan lewat!</span></div>
+        <div><b>Prajurit besar</b><span>Berperisai & butuh <b>2 tembakan</b> beruntun untuk dihabisi.</span></div>
+        <div><b>Item</b><span>Ambil pickup di tengah lagu: <b>×2</b> (skor ganda) atau <b>⚔</b> (senjata baru, tembakan lebih kuat).</span></div>`
 };
 const KEYHINT={
   pulse:`Tap <kbd>Space</kbd> · klik · atau sentuh &nbsp;•&nbsp; Double = dua ketuk cepat &nbsp;•&nbsp; <kbd>Esc</kbd> jeda`,
